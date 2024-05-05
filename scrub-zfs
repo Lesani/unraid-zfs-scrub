@@ -1,0 +1,94 @@
+#!/bin/bash
+
+# This script performs a scrub on all (except excluded) ZFS pools on a Unraid server.
+
+# User-set variables: Modify these as needed before running the script
+# Minimum notification level: "info", "normal", "warning", "error", or "none"
+# Severity levels:
+# - "info": Minimal importance, used for non-critical notifications like skipped pools.
+# - "normal": General notifications about operations.
+# - "warning": Indicates a potential issue that might not require immediate action.
+# - "error": Indicates a significant problem that likely requires immediate attention.
+# - "none": Disables all notifications.
+notification_min_level="normal"
+
+# You can specify pools to exclude from scrubbing in the 'exclude_pools' array.
+# Example of setting excluded pools: exclude_pools=("pool1" "pool2" "pool3")
+# Leave empty to scrub all pools
+exclude_pools=()
+
+# Do not modify the code below this line unless you know what you are doing
+# ----------------------------------------------------------------------------------
+
+# Function to check if a pool is excluded
+is_pool_excluded() {
+    local pool_name=$1
+    for excluded_pool in "${exclude_pools[@]}"; do
+        if [[ "$pool_name" == "$excluded_pool" ]]; then
+            return 0  # Pool is excluded
+        fi
+    done
+    return 1  # Pool is not excluded
+}
+
+# Notification function that respects the minimum severity level
+send_notification() {
+    local severity=$1
+    local title=$2
+    local message=$3
+    declare -A severity_levels=(["error"]=4 ["warning"]=3 ["normal"]=2 ["info"]=1 ["none"]=0)
+    local current_level=${severity_levels[$severity]}
+    local min_level=${severity_levels[$notification_min_level]}
+
+    if [[ $current_level -ge $min_level ]]; then
+        /usr/local/emhttp/plugins/dynamix/scripts/notify -e "ZFS Scrub Script" -s "$title" -d "$message" -i "$severity"
+    fi
+}
+
+# Get a list of all ZFS pools
+echo "Retrieving list of ZFS pools..."
+pools=$(zpool list -H -o name)
+
+# Loop through each pool and run a scrub in the background
+for pool in $pools; do
+    if is_pool_excluded "$pool"; then
+        echo "Excluded pool $pool, skipping scrub."
+        send_notification "info" "Scrub Skipped" "Skipping scrub for excluded pool $pool."
+        continue
+    fi
+    echo "Initiating scrub on pool $pool..."
+    zpool scrub "$pool" &
+    send_notification "normal" "Scrub Started" "Scrubbing pool $pool has started."
+done
+
+# Wait for all scrubs to complete
+echo "Monitoring scrub progress..."
+while true; do
+    sleep 10
+    in_progress=0
+    for pool in $pools; do
+        if ! is_pool_excluded "$pool" && zpool status "$pool" | grep -q "scan: scrub in progress"; then
+            in_progress=1
+            progress=$(zpool status "$pool" | grep -A 1 "scan: scrub in progress" | tail -n1)
+            echo "Scrub still in progress for pool $pool: $progress"
+            break
+        fi
+    done
+    if [[ $in_progress -eq 0 ]]; then
+        echo "All scrubs have completed."
+        break
+    fi
+done
+
+# Check the status of each scrub
+for pool in $pools; do
+    if ! is_pool_excluded "$pool"; then
+        if zpool status "$pool" | grep -q "errors: No known data errors"; then
+            echo "Scrub completed successfully for pool $pool."
+            send_notification "normal" "Scrub Success" "Scrub of pool $pool completed successfully."
+        else
+            echo "Scrub failed with errors for pool $pool."
+            send_notification "error" "Scrub Failure" "Scrub of pool $pool failed with errors."
+        fi
+    fi
+done
