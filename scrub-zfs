@@ -69,7 +69,7 @@ while true; do
     for pool in $pools; do
         if ! is_pool_excluded "$pool" && zpool status "$pool" | grep -q "scan: scrub in progress"; then
             in_progress=1
-            progress=$(zpool status "$pool" | grep -A 1 "scan: scrub in progress" | tail -n1)
+            progress=$(zpool status "$pool" | grep -A 2 "scan: scrub in progress" | tail -n2)
             echo "Scrub still in progress for pool $pool: $progress"
             break
         fi
